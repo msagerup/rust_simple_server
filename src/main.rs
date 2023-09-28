@@ -5,8 +5,8 @@ use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
-use std::sync::Mutex;
+use std::io::{Result, Write};
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Task {
@@ -69,19 +69,57 @@ impl DB {
 
     // DB saving.
     fn save_to_file(&self) -> std::io::Result<()> {
-        let data = serde_json::to_string(self)?;
-        let mut file = fs::File::create("database.json")?;
+        let data: String = serde_json::to_string(self)?;
+        let mut file: fs::File = fs::File::create("database.json")?;
         file.write_all(data.as_bytes())?;
         Ok(())
     }
 
     fn load_from_file() -> std::io::Result<Self> {
-        let file_content = fs::read_to_string("database.json")?;
+        let file_content: String = fs::read_to_string("database.json")?;
         let db = serde_json::from_str(&file_content)?;
         Ok(db)
     }
 }
 
-fn main() {
-    //   Connect db.
+struct AppState {
+    db: Mutex<DB>,
+}
+
+async fn create_task(app_state: web::Data<AppState>, task: web::Json<Task>) -> impl Responder {
+    let mut db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    db.insert(task.into_inner());
+    let _ = db.save_to_file();
+    HttpResponse::Ok().finish()
+}
+
+#[actix_web::main]
+async fn main() -> Result<()> {
+    let db: DB = match DB::load_from_file() {
+        Ok(db) => db,
+        Err(_) => DB::new(),
+    };
+
+    let data: web::Data<AppState> = web::Data::new(AppState { db: Mutex::new(db) });
+    HttpServer::new(move || {
+        App::new()
+            .wrap(
+                Cors::permissive()
+                    .allowed_origin_fn(
+                        |origin: &header::HeaderValue, _req_head: &actix_web::dev::RequestHead| {
+                            origin.as_bytes().starts_with(b"http://localhost") || origin == "null"
+                        },
+                    )
+                    .allowed_methods(vec!["GET", "POST", "PUT", "DELETE"])
+                    .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
+                    .allowed_header(header::CONTENT_TYPE)
+                    .supports_credentials()
+                    .max_age(3600),
+            )
+            .app_data(data.clone())
+            .route("/task", web::post().to(create_task))
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
