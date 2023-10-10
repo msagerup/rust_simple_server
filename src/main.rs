@@ -1,7 +1,5 @@
 use actix_cors::Cors;
 use actix_web::{http::header, web, App, HttpResponse, HttpServer, Responder};
-use async_trait::async_trait;
-use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -28,6 +26,13 @@ struct DB {
     users: HashMap<u64, User>,
 }
 
+
+#[derive(Serialize)]
+struct Message {
+    text: String,
+}
+
+
 impl DB {
     fn new() -> Self {
         Self {
@@ -45,7 +50,7 @@ impl DB {
         self.tasks.get(id)
     }
     // Get all tasks
-    fn get_all(&self, id: &u64) -> Vec<&Task> {
+    fn get_all(&self) -> Vec<&Task> {
         self.tasks.values().collect()
     }
     // delete task
@@ -89,8 +94,55 @@ struct AppState {
 async fn create_task(app_state: web::Data<AppState>, task: web::Json<Task>) -> impl Responder {
     let mut db: MutexGuard<DB> = app_state.db.lock().unwrap();
     db.insert(task.into_inner());
+    let message = Message { text: "Created".to_string() };
+    let _ = db.save_to_file();
+    HttpResponse::Ok().json(message)
+}
+
+async fn update_tasks(app_state: web::Data<AppState>,  task: web::Json<Task>) -> impl Responder {
+    let mut db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    let message = Message { text: "Updated".to_string() };
+    db.update(task.into_inner());
+    let _ = db.save_to_file();
+    HttpResponse::Ok().json(message)
+}
+
+async fn read_task(app_state: web::Data<AppState>, id: web::Path<u64>) -> impl Responder {
+    let db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    match db.get(&id.into_inner()) {
+        Some(task) => HttpResponse::Ok().json(task),
+        None => HttpResponse::NotFound().finish(),
+    }
+}
+
+async fn read_all_tasks(app_state: web::Data<AppState>) -> impl Responder {
+    let db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    let tasks: Vec<&Task> = db.get_all();
+    HttpResponse::Ok().json(tasks)
+}
+
+
+async fn delete_task(app_state: web::Data<AppState>, id: web::Path<u64>) -> impl Responder {
+    let mut db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    db.delete(&id.into_inner());
+    let message = Message { text: "Deleted".to_string() };
+    let _ = db.save_to_file();
+    HttpResponse::Ok().json(message)
+}
+
+async fn register_user(app_state: web::Data<AppState>, user:web::Json<User>) -> impl Responder {
+    let mut db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    db.insert_user(user.into_inner());
     let _ = db.save_to_file();
     HttpResponse::Ok().finish()
+}
+
+async fn login(app_state: web::Data<AppState>, user:web::Json<User>) -> impl Responder {
+    let db: MutexGuard<DB> = app_state.db.lock().unwrap();
+    match db.get_user_by_name(&user.username) {
+        Some(stored_user) if stored_user.password == user.password => HttpResponse::Ok().body("Logged in!"),
+        _ => HttpResponse::BadRequest().body("Invalid username or password")
+    }
 }
 
 #[actix_web::main]
@@ -118,6 +170,16 @@ async fn main() -> Result<()> {
             )
             .app_data(data.clone())
             .route("/task", web::post().to(create_task))
+            .route("/task", web::put().to(update_tasks))
+            .route("/task/{id}", web::get().to(read_task))
+            .route("/task/{id}", web::delete().to(delete_task))
+            .route("/task", web::get().to(read_all_tasks))
+
+            // User paths
+            .route("/register", web::post().to(register_user))
+            .route("/login", web::post().to(login))
+
+            
     })
     .bind("127.0.0.1:8080")?
     .run()
